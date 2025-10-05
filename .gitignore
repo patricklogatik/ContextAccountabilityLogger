@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+*.log
+tracker_config.json
+.vscode/
+.venv/
