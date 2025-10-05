@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 from datetime import datetime, timedelta
 from pynput import keyboard, mouse
@@ -7,10 +8,24 @@ import threading
 import json
 from collections import defaultdict
 import pyperclip
-import win32gui
-import win32process
 import psutil
 import tkinter as tk
+
+WINDOW_TRACKING_AVAILABLE = False
+
+if sys.platform.startswith("win"):
+    try:
+        import win32gui  # type: ignore
+        import win32process  # type: ignore
+
+        WINDOW_TRACKING_AVAILABLE = True
+    except ImportError:
+        win32gui = None  # type: ignore
+        win32process = None  # type: ignore
+        WINDOW_TRACKING_AVAILABLE = False
+else:
+    win32gui = None  # type: ignore
+    win32process = None  # type: ignore
 
 class AppleOverlay:
     def __init__(self, on_goal_change_callback):
@@ -347,9 +362,15 @@ class ActivityTracker:
         
         self.goal_overlay = AppleOverlay(self.log_goal_change)
         self.ctrl_pressed = False
-        
+        self.window_tracking_enabled = WINDOW_TRACKING_AVAILABLE
+        self.multi_monitor_capture = True
+
         self.log_event("system", "session_started", {})
-        
+
+        if not self.window_tracking_enabled:
+            print("Window tracking disabled: win32 APIs not available on this platform.")
+            self.log_event("system", "window_tracking_unavailable", {"platform": sys.platform})
+
         with open(self.keylog_file, 'a', encoding='utf-8') as f:
             f.write(f"\n=== Session started: {self.session_start.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
         with open(self.events_file, 'a', encoding='utf-8') as f:
@@ -388,7 +409,16 @@ class ActivityTracker:
         while self.running:
             try:
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                screenshot = ImageGrab.grab(all_screens=True)
+
+                try:
+                    if self.multi_monitor_capture:
+                        screenshot = ImageGrab.grab(all_screens=True)
+                    else:
+                        screenshot = ImageGrab.grab()
+                except TypeError:
+                    screenshot = ImageGrab.grab()
+                    self.multi_monitor_capture = False
+
                 filename = os.path.join(self.screenshot_folder, f"screenshot_{timestamp}.png")
                 screenshot.save(filename)
                 self.screenshot_count += 1
@@ -467,6 +497,9 @@ class ActivityTracker:
             self.ctrl_pressed = False
     
     def get_active_window_info(self):
+        if not self.window_tracking_enabled or not WINDOW_TRACKING_AVAILABLE or win32gui is None:
+            return "Unavailable", "Unavailable"
+
         try:
             hwnd = win32gui.GetForegroundWindow()
             window_title = win32gui.GetWindowText(hwnd)
@@ -474,17 +507,20 @@ class ActivityTracker:
             process = psutil.Process(pid)
             app_name = process.name()
             return app_name, window_title
-        except Exception as e:
+        except Exception:
             return "Unknown", "Unknown"
-    
+
     def track_window_activity(self):
+        if not self.window_tracking_enabled:
+            return
+
         while self.running:
             try:
                 app_name, window_title = self.get_active_window_info()
                 current_time = datetime.now()
                 
                 window_info = f"{app_name} - {window_title}"
-                if window_info != self.current_window and window_title != "Unknown":
+                if window_info != self.current_window and window_title not in {"Unknown", "Unavailable"}:
                     time_spent = 0
                     if self.current_window:
                         time_spent = (current_time - self.last_window_check).total_seconds()
@@ -615,25 +651,29 @@ class ActivityTracker:
     
     def run(self):
         # Start all tracking threads in background
-        screenshot_thread = threading.Thread(target=self.take_screenshot, daemon=True)
-        keylog_thread = threading.Thread(target=self.start_keylogger, daemon=True)
-        keystroke_save_thread = threading.Thread(target=self.save_keystroke_buffer, daemon=True)
-        stats_thread = threading.Thread(target=self.save_session_stats, daemon=True)
-        clipboard_thread = threading.Thread(target=self.monitor_clipboard, daemon=True)
-        window_thread = threading.Thread(target=self.track_window_activity, daemon=True)
-        mouse_thread = threading.Thread(target=self.start_mouse_listener, daemon=True)
-        
-        screenshot_thread.start()
-        keylog_thread.start()
-        keystroke_save_thread.start()
-        stats_thread.start()
-        clipboard_thread.start()
-        window_thread.start()
-        mouse_thread.start()
+        threads = [
+            threading.Thread(target=self.take_screenshot, daemon=True),
+            threading.Thread(target=self.start_keylogger, daemon=True),
+            threading.Thread(target=self.save_keystroke_buffer, daemon=True),
+            threading.Thread(target=self.save_session_stats, daemon=True),
+            threading.Thread(target=self.monitor_clipboard, daemon=True),
+            threading.Thread(target=self.start_mouse_listener, daemon=True)
+        ]
+
+        if self.window_tracking_enabled:
+            threads.append(threading.Thread(target=self.track_window_activity, daemon=True))
+        else:
+            print("Active window tracking is disabled for this platform.")
+
+        for thread in threads:
+            thread.start()
         
         print(f"Activity tracker started. Logging to: {self.today_folder}")
         print(f"Keystrokes saved every {self.keystroke_interval} seconds")
-        print("All tracking active (clipboard, window, mouse)")
+        if self.window_tracking_enabled:
+            print("All tracking active (clipboard, window, mouse)")
+        else:
+            print("Tracking active (clipboard, mouse) – window tracking disabled on this platform")
         print("Unified activity log: activity_log.json")
         print("")
         print("APPLE-STYLE OVERLAY")
