@@ -432,7 +432,7 @@ class ActivityTracker:
             except Exception as e:
                 print(f"Screenshot error: {e}")
             
-            time.sleep(10)
+            time.sleep(120)
     
     def save_keystroke_buffer(self):
         while self.running:
@@ -725,4 +725,5 @@ if __name__ == "__main__":
         print(f"Configuration saved. Keystrokes will be saved every {keystroke_interval} seconds")
     
     tracker = ActivityTracker(log_folder, keystroke_interval)
+
     tracker.run()
